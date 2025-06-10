@@ -10,11 +10,11 @@ test "simple select" {
     const query = "select 'george' as value";
 
     const db = try my.MyDB.init(.{
-        .host = "srv-webisdb-q",
-        .user = "webuser",
-        .passwd = "hu2eih2der4quei1Oonah1xoh1eimae5ed!",
+        .host = "",
+        .user = "",
+        .passwd = "",
         .port = 3306,
-        .db = "testisend_engie_ro"
+        .db = ""
     });
     defer db.deinit();
     
