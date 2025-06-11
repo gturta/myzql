@@ -5,14 +5,46 @@ pub fn main() !void {
     // Prints to stderr, ignoring potential errors.
 }
 
+fn getEnvVars(allocator: std.mem.Allocator) !struct {[:0]const u8, [:0]const u8, [:0]const u8} {
+    var env = try std.process.getEnvMap(allocator);
+    defer env.deinit();
+
+    var host: [:0]u8 = undefined;
+    if (env.get("SQUEAL_HOST")) |env_host| {
+        host = try allocator.allocSentinel(u8, env_host.len, 0);
+        @memcpy(host, env_host);
+    } else return error.EnvNotDefined;
+
+    var user: [:0]u8 = undefined;
+    if (env.get("SQUEAL_USER")) |env_user| {
+        user = try allocator.allocSentinel(u8, env_user.len, 0);
+        @memcpy(user, env_user);
+    } else return error.EnvNotDefined;
+
+    var passwd: [:0]u8 = undefined;
+    if (env.get("SQUEAL_PASSWD")) |env_passwd| {
+        passwd = try allocator.allocSentinel(u8, env_passwd.len, 0);
+        @memcpy(passwd, env_passwd);
+    } else return error.EnvNotDefined;
+
+    return .{host, user, passwd};
+}
 
 test "simple select" {
+    const allocator = std.testing.allocator;
     const query = "select 'george' as value";
 
+    const host, const user, const passwd = try getEnvVars(allocator);
+    defer {
+        allocator.free(host);
+        allocator.free(user);
+        allocator.free(passwd);
+    }
+
     const db = try my.MyDB.init(.{
-        .host = "",
-        .user = "",
-        .passwd = "",
+        .host = host,
+        .user = user,
+        .passwd = passwd,
         .port = 3306,
         .db = ""
     });
