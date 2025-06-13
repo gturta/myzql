@@ -44,11 +44,7 @@ pub const MyDB = struct {
         const field_count = c.mysql_field_count(self.DB);
         if (field_count == 0) return null;
 
-        const result: ?*c.MYSQL_RES = c.mysql_store_result(self.DB);
-        if ( result == null ) {
-            return error.FetchResult; //field_count is > 0, should have had results
-        }
-        return MyResult.init(result.?);
+        return try MyResult.init(self.DB);
     } 
 
 };
@@ -58,10 +54,17 @@ pub const MyResult = struct {
     rows: u64,
     fields: c_uint,
 
-    pub fn init(result: *c.MYSQL_RES) MyResult {
-        const rows = c.mysql_num_rows(result);
-        const fields = c.mysql_num_fields(result);
-        return .{.result = result, .rows = rows, .fields = fields};
+    pub fn init(db: *c.MYSQL) !MyResult {
+        //get result
+        const opt_result: ?*c.MYSQL_RES = c.mysql_store_result(db);
+        if ( opt_result ) |result| {
+            const rows = c.mysql_num_rows(result);
+            const fields = c.mysql_num_fields(result);
+            return .{.result = result, .rows = rows, .fields = fields};
+        } else {
+            std.debug.print("Result store failed, msg:{s}\n", .{c.mysql_error(db)});
+            return error.FetchResult; //field_count is > 0, should have had results
+        }
     }
 
     pub fn deinit(self: MyResult) void{
@@ -94,5 +97,85 @@ pub const MyRow = struct {
         data.ptr = self.row[index];
         data.len = self.lengths[index];
         return data;
+    }
+};
+
+pub const MyStatement = struct {
+    allocator: std.mem.Allocator,
+    db: *c.MYSQL,
+    statement: *c.MYSQL_STMT,
+    bind_params: ?[]c.MYSQL_BIND = null,
+
+    pub fn init(allocator: std.mem.Allocator, db: *c.MYSQL, query: []const u8) !MyStatement {
+        const opt_stmt: ?*c.MYSQL_STMT = c.mysql_stmt_init(db);         
+        if (opt_stmt == null) return error.StatementInit;
+
+        if (c.mysql_stmt_prepare(opt_stmt.?, query.ptr, query.len) != 0) {
+            std.debug.print("Statement execute failed, msg:{s}\n", .{c.mysql_error(db)});
+            return error.StatementPrepare;
+        }        
+        return MyStatement{.allocator = allocator, .db = db, .statement = opt_stmt.?};
+    }
+
+    pub fn deinit(self: MyStatement) void {
+        _ = c.mysql_stmt_close(self.statement);
+        if (self.bind_params) |binds| self.allocator.free(binds);
+    }
+
+    pub fn bind(self: *MyStatement, params: anytype) !void {
+
+        const params_type = @TypeOf(params);
+        if(@typeInfo(params_type) != std.builtin.Type.@"struct") {
+            @compileError("expected struct argument, found " ++ @typeName(params_type));
+        }
+        //check if number of params is the same as the params from the statement
+        const prep_params = c.mysql_stmt_param_count(self.statement);
+        const num_params = @typeInfo(@TypeOf(params)).@"struct".fields.len;
+        if (prep_params != num_params) {
+            std.debug.print("Expected {} params, got {}", .{prep_params, num_params});
+        }
+
+        if (num_params > 0) {
+            self.bind_params = try self.allocator.alloc(c.MYSQL_BIND, num_params);
+
+            inline for (@typeInfo(@TypeOf(params)).@"struct".fields, 0..) |field, idx| {
+                var binds = &self.bind_params.?[idx];
+                binds.* = std.mem.zeroes(c.MYSQL_BIND);
+                const value = @field(params, field.name);
+                switch(@typeInfo(field.type)) {
+                    .pointer => {
+                        binds.buffer = @constCast(@ptrCast(value));
+                        binds.buffer_length = value.len;
+                        binds.buffer_type = c.MYSQL_TYPE_STRING;
+                     },
+                    .array => {
+                        binds.buffer = @constCast(@ptrCast(value));
+                        binds.buffer_length = value.len;
+                        binds.buffer_type = c.MYSQL_TYPE_STRING;
+                     },
+                    .int => {
+                        binds.buffer = @constCast(@ptrCast(&value));
+                        binds.buffer_length = 1;
+                        binds.buffer_type = c.MYSQL_TYPE_LONG;
+                    },
+                    else => @compileError("Bind parameter type not implemented: " ++ @typeName(field.type)),
+                }
+            }
+            if (c.mysql_stmt_bind_param(self.statement, self.bind_params.?.ptr)) {
+                std.debug.print("Statement bind failed, msg:{s}\n", .{c.mysql_error(self.db)});
+                return error.StatementBind;
+            }
+        }
+    }
+
+    pub fn execute(self: MyStatement) !void {
+
+        if (c.mysql_stmt_execute(self.statement) != 0) {
+            std.debug.print("Statement execute failed, msg:{s}\n", .{c.mysql_error(self.db)});
+            return error.StatementExecute;
+        }
+        //check if we need to fetch a result
+        const field_count = c.mysql_field_count(self.db);
+        std.debug.print("Statement execute got {} fields", .{field_count});
     }
 };
